@@ -54,6 +54,8 @@
 #include <errno.h>
 #include <err.h>
 #include <inttypes.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 /* We are re-using pointers to our `struct lo_inode` and `struct
    lo_dirp` elements as inodes. This means that we must be able to
@@ -80,6 +82,7 @@ struct lo_inode {
 struct lo_data {
 	int debug;
 	int writeback;
+	char *target;
 	struct lo_inode root;
 };
 
@@ -88,6 +91,8 @@ static const struct fuse_opt lo_opts[] = {
 	  offsetof(struct lo_data, writeback), 1 },
 	{ "no_writeback",
 	  offsetof(struct lo_data, writeback), 0 },
+	{ "--target=%s",
+	  offsetof(struct lo_data, target), 0 },
 	FUSE_OPT_END
 };
 
@@ -546,7 +551,10 @@ int main(int argc, char *argv[])
 	struct fuse_session *se;
 	struct fuse_cmdline_opts opts;
 	struct lo_data lo = { .debug = 0,
-	                      .writeback = 0 };
+	                      .writeback = 0,
+			      .target = NULL };
+	struct sockaddr_un addr;
+	int sock, fd;
 	int ret = -1;
 
 	lo.root.next = lo.root.prev = &lo.root;
@@ -571,10 +579,39 @@ int main(int argc, char *argv[])
 		return 1;
 	
 	lo.debug = opts.debug;
-	lo.root.fd = open("/", O_PATH);
+	lo.root.fd = open(opts.mountpoint, O_PATH);
 	lo.root.nlookup = 2;
 	if (lo.root.fd == -1)
-		err(1, "open(\"/\", O_PATH)");
+		err(1, "open(\"%s\", O_PATH)", opts.mountpoint);
+	if (lo.target == NULL)
+		err(1, "--target must be speicified");
+	if (strncmp(lo.target, "unix://", 7))
+		err(1, "only unix:// is supported for --target");
+	sock = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (sock < 0) {
+		ret = errno;
+		perror("socket error");
+		goto err_out1;
+	}
+	memset(&addr, 0, sizeof(addr));
+	addr.sun_family = AF_UNIX;
+	strncpy(addr.sun_path, lo.target + 7, sizeof(addr.sun_path) - 1);
+	if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+		ret = errno;
+		perror("bind error");
+		goto err_out1;
+	}
+	if (listen(sock, 1) == -1) {
+		ret = errno;
+		perror("listen error");
+		goto err_out1;
+	}
+	fd = accept(sock, NULL, NULL);
+	if (fd == -1){
+		ret = errno;
+		perror("listen error");
+		goto err_out1;
+	}
 
 	se = fuse_session_new(&args, &lo_oper, sizeof(lo_oper), &lo);
 	if (se == NULL)
@@ -583,7 +620,7 @@ int main(int argc, char *argv[])
 	if (fuse_set_signal_handlers(se) != 0)
 	    goto err_out2;
 
-	if (fuse_session_mount(se, opts.mountpoint) != 0)
+	if (fuse_session_bind(se, fd) != 0)
 	    goto err_out3;
 
 	fuse_daemonize(opts.foreground);

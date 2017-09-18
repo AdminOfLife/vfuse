@@ -1814,6 +1814,8 @@ struct fuse_session *fuse_session_new(struct fuse_args *args,
  **/
 int fuse_session_mount(struct fuse_session *se, const char *mountpoint);
 
+int fuse_session_bind(struct fuse_session *se, int fd);
+
 /**
  * Enter a single threaded, blocking event loop.
  *
