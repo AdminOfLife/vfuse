@@ -50,6 +50,7 @@ struct fuse_mt {
 	int clone_fd;
 };
 
+#ifndef __CYGWIN__
 static struct fuse_chan *fuse_chan_new(int fd)
 {
 	struct fuse_chan *ch = (struct fuse_chan *) malloc(sizeof(*ch));
@@ -65,6 +66,7 @@ static struct fuse_chan *fuse_chan_new(int fd)
 
 	return ch;
 }
+#endif
 
 struct fuse_chan *fuse_chan_get(struct fuse_chan *ch)
 {
@@ -218,6 +220,13 @@ int fuse_start_thread(pthread_t *thread_id, void *(*func)(void *), void *arg)
 	return 0;
 }
 
+#ifdef __CYGWIN__
+static struct fuse_chan *fuse_clone_chan(struct fuse_mt *mt)
+{
+	(void) mt;
+	return NULL;
+}
+#else
 static struct fuse_chan *fuse_clone_chan(struct fuse_mt *mt)
 {
 	int res;
@@ -251,6 +260,7 @@ static struct fuse_chan *fuse_clone_chan(struct fuse_mt *mt)
 
 	return newch;
 }
+#endif
 
 static int fuse_loop_start_thread(struct fuse_mt *mt)
 {

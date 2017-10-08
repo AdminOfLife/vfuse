@@ -16,6 +16,7 @@ case $target_os in
      *linux*)	arch=linux;;
      *netbsd*)  arch=netbsd;;
      *bsd*)	arch=bsd;;
+     *cygwin*)  arch=cygwin;;
      *)		arch=unknown;;
 esac
 
@@ -48,13 +49,13 @@ fi
 if test "$arch" = linux -a "$enable_util" != "no"; then
 	subdirs2="$subdirs2 util";
 fi
-if test "$enable_example" != "no"; then
+if test "$arch" != cygwin -a "$enable_example" != "no"; then
 	subdirs2="$subdirs2 example";
 fi
 if test "$enable_test" != "no"; then
 	subdirs2="$subdirs2 test";
 fi
-if test "$enable_mtab" = "no" -o \
+if test "$enable_mtab" = "no" -o "$arch" = cygwin -o \
 	"$arch" = "netbsd"; then
 	AC_DEFINE(IGNORE_MTAB, 1, [Don't update /etc/mtab])
 fi
@@ -107,6 +108,7 @@ AC_SUBST(subdirs2)
 AM_CONDITIONAL(LINUX, test "$arch" = linux)
 AM_CONDITIONAL(NETBSD, test "$arch" = netbsd)
 AM_CONDITIONAL(BSD, test "$arch" = bsd)
+AM_CONDITIONAL(CYGWIN, test "$arch" = cygwin)
 
 util_linux_ok=yes
 if test "$arch" = linux -a "$cross_compiling" != "yes"; then

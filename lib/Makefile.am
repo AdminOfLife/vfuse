@@ -5,10 +5,14 @@ AM_CPPFLAGS = -I$(top_srcdir)/include -DFUSERMOUNT_DIR=\"$(bindir)\" \
 
 lib_LTLIBRARIES = libfuse3.la
 
+if CYGWIN
+mount_source =
+else
 if BSD
 mount_source = mount_bsd.c
 else
 mount_source = mount.c mount_util.c mount_util.h
+endif
 endif
 
 if ICONV

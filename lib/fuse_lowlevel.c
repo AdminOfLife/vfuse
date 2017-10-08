@@ -2618,6 +2618,7 @@ int fuse_session_receive_buf(struct fuse_session *se, struct fuse_buf *buf)
 	return fuse_session_receive_buf_int(se, buf, NULL);
 }
 
+#ifdef HAVE_SPLICE
 static int fuse_sock_splice(int from, int to, int len, int flags)
 {
 	int ret = 0;
@@ -2638,6 +2639,7 @@ static int fuse_sock_splice(int from, int to, int len, int flags)
 out:
 	return ret;
 }
+#endif
 
 static int fuse_sock_recv(int fd, void *data, int len, int flags)
 {
