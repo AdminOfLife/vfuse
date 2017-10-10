@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <sys/file.h>
+#include <sys/socket.h>
 
 #ifndef F_LINUX_SPECIFIC_BASE
 #define F_LINUX_SPECIFIC_BASE       1024
@@ -2617,6 +2618,92 @@ int fuse_session_receive_buf(struct fuse_session *se, struct fuse_buf *buf)
 	return fuse_session_receive_buf_int(se, buf, NULL);
 }
 
+static int fuse_sock_recv(int fd, void *data, int len, int flags)
+{
+	int saved = len;
+
+	while (len > 0) {
+		int res;
+
+		res = recv(fd, data, len, flags);
+		if ((res == -1) && (errno == EAGAIN))
+			continue;
+		if ((res == -1) || (res == 0))
+			return res;
+
+		/* Re-do the entire read if reading header */
+		if ((res != len) && (flags & MSG_PEEK))
+			continue;
+
+		len -= res;
+	}
+
+	return saved;
+}
+
+static int fuse_sock_read_req(int fd, void *data, int maxlen)
+{
+	struct fuse_in_header header;
+	int res;
+
+	res = fuse_sock_recv(fd, &header, sizeof(header), MSG_PEEK);
+	if (res < sizeof(header))
+		goto out;	/* -1 or 0 */
+
+	if (maxlen < header.len) {
+		fprintf(stderr,
+			"fuse: fuse_sock_read_req: buffer size too small: "
+			"%d, required %d\n",
+			maxlen, header.len);
+		res = -1;
+		errno = -EIO;
+		goto out;
+	}
+
+	res = fuse_sock_recv(fd, data, header.len, 0);
+out:
+	return res;
+}
+
+#ifdef HAVE_SPLICE
+static int fuse_sock_splice_req(int from, int to, int maxlen, int flags)
+{
+	struct fuse_in_header header;
+	int res, len;
+
+	res = fuse_sock_recv(from, &header, sizeof(header), MSG_PEEK);
+	if (res < sizeof(header))
+		goto out;	/* -1 or 0 */
+
+	if (maxlen < header.len) {
+		fprintf(stderr,
+			"fuse: fuse_sock_splice_req: buffer size too small: "
+			"%d, required %d\n",
+			maxlen, header.len);
+		res = -1;
+		errno = -EIO;
+		goto out;
+	}
+
+	len = header.len;
+	while (len > 0) {
+		res = splice(from, NULL, to, NULL, len, flags);
+		if ((res == -1) && (errno == EAGAIN))
+			continue;
+		if ((res == -1) || (res == 0))
+			goto out;
+		len -= res;
+	}
+
+	return header.len;
+
+out:
+	return res;
+}
+#endif
+
+
+
 int fuse_session_receive_buf_int(struct fuse_session *se, struct fuse_buf *buf,
 				 struct fuse_chan *ch)
 {
@@ -2647,8 +2734,16 @@ int fuse_session_receive_buf_int(struct fuse_session *se, struct fuse_buf *buf,
 			goto fallback;
 	}
 
-	res = splice(ch ? ch->fd : se->fd,
-		     NULL, llp->pipe[1], NULL, bufsize, 0);
+	if (se->use_socket){
+		res = fuse_sock_splice_req(ch ? ch->fd : se->fd,
+					   llp->pipe[1], bufsize, 0);
+		if (res == 0)
+			fuse_session_exit(se);
+	}
+	else {
+		res = splice(ch ? ch->fd : se->fd,
+			     NULL, llp->pipe[1], NULL, bufsize, 0);
+	}
 	err = errno;
 
 	if (fuse_session_exited(se))
@@ -2734,7 +2829,14 @@ fallback:
 	}
 
 restart:
-	res = read(ch ? ch->fd : se->fd, buf->mem, se->bufsize);
+	if (se->use_socket){
+		res = fuse_sock_read_req(ch ? ch->fd : se->fd, buf->mem, se->bufsize);
+		if (res == 0)
+			fuse_session_exit(se);
+	}
+	else{
+		res = read(ch ? ch->fd : se->fd, buf->mem, se->bufsize);
+	}
 	err = errno;
 
 	if (fuse_session_exited(se))
@@ -2851,6 +2953,7 @@ struct fuse_session *fuse_session_new(struct fuse_args *args,
 	memcpy(&se->op, op, op_size);
 	se->owner = getuid();
 	se->userdata = userdata;
+	se->use_socket = 0;
 
 	se->mo = mo;
 	return se;
@@ -2897,6 +3000,14 @@ int fuse_session_mount(struct fuse_session *se, const char *mountpoint)
 error_out:
 	fuse_kern_unmount(mountpoint, fd);
 	return -1;
+}
+
+int fuse_session_socket(struct fuse_session *se, int sock)
+{
+	se->fd = sock;
+	se->mountpoint = NULL;
+	se->use_socket = 1;
+	return 0;
 }
 
 int fuse_session_fd(struct fuse_session *se)

@@ -306,6 +306,11 @@ int fuse_session_loop_mt(struct fuse_session *se, int clone_fd)
 	struct fuse_mt mt;
 	struct fuse_worker *w;
 
+	/* Multi-thread not supported for socket mode */
+	if (se->use_socket) {
+		fprintf(stderr, "fuse: multi-threaded not supported on socket mode.\n");
+		return -ENOTSUP;
+	}
 	memset(&mt, 0, sizeof(struct fuse_mt));
 	mt.se = se;
 	mt.clone_fd = clone_fd;

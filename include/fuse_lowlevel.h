@@ -1955,6 +1955,16 @@ void fuse_session_process_buf(struct fuse_session *se,
  */
 int fuse_session_receive_buf(struct fuse_session *se, struct fuse_buf *buf);
 
+/**
+ * Set FUSE file system to run on a socket.
+ *
+ * @param se session object
+ * @param socket the socket fd to run with
+ *
+ * @return 0 on success, -1 on failure.
+ **/
+int fuse_session_socket(struct fuse_session *se, int sock);
+
 #ifdef __cplusplus
 }
 #endif
