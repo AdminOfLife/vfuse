@@ -1814,8 +1814,6 @@ struct fuse_session *fuse_session_new(struct fuse_args *args,
  **/
 int fuse_session_mount(struct fuse_session *se, const char *mountpoint);
 
-int fuse_session_bind(struct fuse_session *se, int fd);
-
 /**
  * Enter a single threaded, blocking event loop.
  *
@@ -1956,6 +1954,16 @@ void fuse_session_process_buf(struct fuse_session *se,
  * @return the actual size of the raw request, or -errno on error
  */
 int fuse_session_receive_buf(struct fuse_session *se, struct fuse_buf *buf);
+
+/**
+ * Set FUSE file system to run on a socket.
+ *
+ * @param se session object
+ * @param socket the socket fd to run with
+ *
+ * @return 0 on success, -1 on failure.
+ **/
+int fuse_session_socket(struct fuse_session *se, int sock);
 
 #ifdef __cplusplus
 }

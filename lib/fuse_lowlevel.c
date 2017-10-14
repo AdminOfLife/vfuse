@@ -2618,56 +2618,97 @@ int fuse_session_receive_buf(struct fuse_session *se, struct fuse_buf *buf)
 	return fuse_session_receive_buf_int(se, buf, NULL);
 }
 
-#ifdef HAVE_SPLICE
-static int fuse_sock_splice(int from, int to, int len, int flags)
+static int fuse_sock_recv(int fd, void *data, int len, int flags)
 {
-	int ret = 0;
+	int saved = len;
 
 	while (len > 0) {
-		ret = splice(from, NULL, to, NULL, len, flags);
-		if (ret < 0 && errno == EAGAIN)
+		int res;
+
+		res = recv(fd, data, len, flags);
+		if ((res == -1) && (errno == EAGAIN))
 			continue;
-		if (ret < 0){
-			ret = errno;
-			goto out;
-		}
-		if (!(flags & MSG_PEEK) || len == ret)
-			len -= ret;
+		if ((res == -1) || (res == 0))
+			return res;
+
+		/* Re-do the entire read if reading header */
+		if ((res != len) && (flags & MSG_PEEK))
+			continue;
+
+		len -= res;
 	}
 
-	return 0;
+	return saved;
+}
+
+static int fuse_sock_read_req(int fd, void *data, int maxlen)
+{
+	struct fuse_in_header header;
+	int res;
+
+	res = fuse_sock_recv(fd, &header, sizeof(header), MSG_PEEK);
+	if (res < sizeof(header))
+		goto out;	/* -1 or 0 */
+
+	if (maxlen < header.len) {
+		fprintf(stderr,
+			"fuse: fuse_sock_read_req: buffer size too small: "
+			"%d, required %d\n",
+			maxlen, header.len);
+		res = -1;
+		errno = -EIO;
+		goto out;
+	}
+
+	res = fuse_sock_recv(fd, data, header.len, 0);
 out:
-	return ret;
+	return res;
+}
+
+#ifdef HAVE_SPLICE
+static int fuse_sock_splice_req(int from, int to, int maxlen, int flags)
+{
+	struct fuse_in_header header;
+	int res, len;
+
+	res = fuse_sock_recv(from, &header, sizeof(header), MSG_PEEK);
+	if (res < sizeof(header))
+		goto out;	/* -1 or 0 */
+
+	if (maxlen < header.len) {
+		fprintf(stderr,
+			"fuse: fuse_sock_splice_req: buffer size too small: "
+			"%d, required %d\n",
+			maxlen, header.len);
+		res = -1;
+		errno = -EIO;
+		goto out;
+	}
+
+	len = header.len;
+	while (len > 0) {
+		res = splice(from, NULL, to, NULL, len, flags);
+		if ((res == -1) && (errno == EAGAIN))
+			continue;
+		if ((res == -1) || (res == 0))
+			goto out;
+		len -= res;
+	}
+
+	return header.len;
+
+out:
+	return res;
 }
 #endif
 
-static int fuse_sock_recv(int fd, void *data, int len, int flags)
-{
-	int ret = 0;
 
-	while (len > 0) {
-		ret = recv(fd, data, len, flags);
-		fprintf(stderr, "RECV %d, get %d, errno %d\n", len, ret, errno);
-		if (ret < 0 && errno == EAGAIN)
-			continue;
-		if (ret < 0){
-			ret = errno;
-			goto out;
-		}
-		if (!(flags & MSG_PEEK) || len == ret)
-			len -= ret;
-	}
-	return 0;
-out:
-	return ret;
-}
 
 int fuse_session_receive_buf_int(struct fuse_session *se, struct fuse_buf *buf,
 				 struct fuse_chan *ch)
 {
 	int err;
 	ssize_t res;
-	struct fuse_in_header header;
 #ifdef HAVE_SPLICE
 	size_t bufsize = se->bufsize;
 	struct fuse_ll_pipe *llp;
@@ -2692,27 +2733,18 @@ int fuse_session_receive_buf_int(struct fuse_session *se, struct fuse_buf *buf,
 		if (llp->size < bufsize)
 			goto fallback;
 	}
-	if (se->no_mount){
-		res = -1;
-		err = fuse_sock_recv(ch ? ch->fd : se->fd, &header, sizeof(header), MSG_PEEK);
-		if (se->debug)
-			fprintf(stderr, "fuse_sock_recv header size: %d, get: %d\n",
-				header.len, err);
-		if (!err) {
-			err = fuse_sock_splice(ch ? ch->fd : se->fd,
-					       llp->pipe[1], header.len, 0);
-			if (err == 0)
-				res = header.len;
-			if (se->debug)
-				fprintf(stderr, "fuse_sock_splice size: %d, get: %d\n",
-					header.len, err);
-		}
+
+	if (se->use_socket){
+		res = fuse_sock_splice_req(ch ? ch->fd : se->fd,
+					   llp->pipe[1], bufsize, 0);
+		if (res == 0)
+			fuse_session_exit(se);
 	}
 	else {
 		res = splice(ch ? ch->fd : se->fd,
 			     NULL, llp->pipe[1], NULL, bufsize, 0);
-		err = errno;
 	}
+	err = errno;
 
 	if (fuse_session_exited(se))
 		return 0;
@@ -2797,24 +2829,16 @@ fallback:
 	}
 
 restart:
-	if (se->no_mount){
-		res = -1;
-		err = fuse_sock_recv(ch ? ch->fd : se->fd, &header, sizeof(header), MSG_PEEK);
-		if (se->debug)
-			fprintf(stderr, "fuse_sock_recv header size: %d, get: %d\n",
-				header.len, err);
-		if (!err) {
-			err = fuse_sock_recv(ch ? ch->fd : se->fd, buf->mem, header.len, 0);
-			if (!err)
-				res = header.len;
-			if (se->debug)
-				fprintf(stderr, "fuse_sock_read: %d, get %d\n", header.len, err);
-		}
+	if (se->use_socket){
+		res = fuse_sock_read_req(ch ? ch->fd : se->fd, buf->mem, se->bufsize);
+		if (res == 0)
+			fuse_session_exit(se);
 	}
 	else{
 		res = read(ch ? ch->fd : se->fd, buf->mem, se->bufsize);
-		err = errno;
 	}
+	err = errno;
+
 	if (fuse_session_exited(se))
 		return 0;
 	if (res == -1) {
@@ -2929,7 +2953,7 @@ struct fuse_session *fuse_session_new(struct fuse_args *args,
 	memcpy(&se->op, op, op_size);
 	se->owner = getuid();
 	se->userdata = userdata;
-	se->no_mount = 0;
+	se->use_socket = 0;
 
 	se->mo = mo;
 	return se;
@@ -2978,11 +3002,11 @@ error_out:
 	return -1;
 }
 
-int fuse_session_bind(struct fuse_session *se, int fd)
+int fuse_session_socket(struct fuse_session *se, int sock)
 {
-	se->fd = fd;
+	se->fd = sock;
 	se->mountpoint = NULL;
-	se->no_mount = 1;
+	se->use_socket = 1;
 	return 0;
 }
 
